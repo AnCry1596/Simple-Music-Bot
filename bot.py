@@ -1,0 +1,220 @@
+import asyncio
+
+import discord
+from discord.ext import commands
+
+import db
+from audio import resolve_list
+from config import GUILD_ID, PREFIX, TOKEN
+from lang import LANGS, set_lang, t
+from player import Player
+
+async def get_prefix(bot, message):
+    gid = message.guild.id if message.guild else None
+    return await db.get_prefix(gid, PREFIX) if gid else PREFIX
+
+
+intents = discord.Intents.default()
+intents.message_content = True
+bot = commands.Bot(command_prefix=get_prefix, intents=intents)
+players = {}  # guild_id -> Player
+
+
+def get_player(ctx):
+    return players.get(ctx.guild.id)
+
+
+async def reply(ctx, content, **kwargs):
+    """Send a command reply that self-deletes after 30s, and delete the invoking !message."""
+    if ctx.interaction is None:  # prefix command: remove the user's "!..." message
+        try:
+            await ctx.message.delete()
+        except discord.HTTPException:
+            pass
+    return await ctx.send(content, delete_after=30, **kwargs)
+
+
+_synced = False
+
+
+@bot.event
+async def on_ready():
+    global _synced
+    if _synced:  # on_ready can fire more than once (reconnects)
+        return
+    if GUILD_ID:
+        guild = discord.Object(id=GUILD_ID)
+        bot.tree.copy_global_to(guild=guild)       # mirror commands onto this guild
+        synced = await bot.tree.sync(guild=guild)  # guild sync is instant
+    else:
+        synced = await bot.tree.sync()             # global sync (up to ~1h to appear)
+    _synced = True
+    print(f"Logged in as {bot.user} — synced {len(synced)} commands: {[c.name for c in synced]}")
+    await resume_all()
+
+
+@bot.hybrid_command(description="Play or queue a track from a URL or search term")
+async def play(ctx, *, query):
+    await ctx.defer()  # resolving can take a few seconds; ack the slash interaction
+    gid = ctx.guild.id
+    if not ctx.author.voice:
+        return await reply(ctx, await t(gid, "join_voice"))
+
+    player = get_player(ctx)
+    if not player or not player.vc.is_connected():
+        vc = await ctx.author.voice.channel.connect()
+        settings = await db.get_settings(gid)
+        player = players[gid] = Player(bot, vc, ctx.channel, autoplay=settings["autoplay"])
+
+    tracks = await asyncio.to_thread(resolve_list, query)
+    if not tracks:
+        return await reply(ctx, await t(gid, "not_found"))
+    for title, vid in tracks:
+        player.add(title, vid, ctx.author.display_name)
+
+    if player.vc.is_playing() or player.vc.is_paused():
+        await player._snapshot()      # capture the newly-queued tracks
+        await player._announce()      # re-post now-playing so its dropdown shows the new queue
+        if len(tracks) == 1:
+            await reply(ctx, await t(gid, "queued_one", title=tracks[0][0]))
+        else:
+            await reply(ctx, await t(gid, "queued_many", n=len(tracks)))
+    else:
+        await reply(ctx, await t(gid, "loading", title=tracks[0][0]))
+        await player.play_next()
+
+
+@bot.hybrid_command(description="Skip the current track")
+async def skip(ctx):
+    player = get_player(ctx)
+    key = "skipped" if player and player.skip() else "nothing_playing"
+    await reply(ctx, await t(ctx.guild.id, key))
+
+
+@bot.hybrid_command(description="Play the previous track")
+async def previous(ctx):
+    player = get_player(ctx)
+    ok = await player.play_previous() if player else False
+    await reply(ctx, await t(ctx.guild.id, "previous" if ok else "no_previous"))
+
+
+@bot.hybrid_command(description="Pause or resume playback")
+async def pause(ctx):
+    player = get_player(ctx)
+    key = "toggled" if player and player.pause() else "nothing_playing"
+    await reply(ctx, await t(ctx.guild.id, key))
+
+
+@bot.hybrid_command(description="Toggle queue-empty autoplay (YouTube radio)")
+async def autoplay(ctx):
+    player = get_player(ctx)
+    if not player:
+        return await reply(ctx, await t(ctx.guild.id, "nothing_playing"))
+    player.autoplay = not player.autoplay
+    await db.set_setting(ctx.guild.id, "autoplay", player.autoplay)
+    await reply(ctx, await t(ctx.guild.id, "autoplay_on" if player.autoplay else "autoplay_off"))
+
+
+@bot.hybrid_command(description="Show the queue; pick a track to jump to it")
+async def queue(ctx):
+    from controls import QueueSelect
+
+    player = get_player(ctx)
+    if not player or not player.queue:
+        return await reply(ctx, await t(ctx.guild.id, "queue_empty"))
+    listing = "\n".join(f"{i+1}. {row[0]}" for i, row in enumerate(player.queue))
+    await reply(ctx, listing, view=QueueSelect(player))
+
+
+@bot.hybrid_command(description="Clear the queue and disconnect")
+async def stop(ctx):
+    player = players.pop(ctx.guild.id, None)
+    if player:
+        await player.stop()
+    await reply(ctx, await t(ctx.guild.id, "stopped"))
+
+
+@bot.hybrid_command(name="playlist-save", description="Save the current queue under a name")
+async def playlist_save(ctx, name):
+    player = get_player(ctx)
+    tracks = ([list(player.current)] if player and player.current else []) + \
+             ([list(row) for row in player.queue] if player else [])
+    if not tracks:
+        return await reply(ctx, await t(ctx.guild.id, "nothing_to_save"))
+    await db.save_playlist(ctx.guild.id, name, tracks)
+    await reply(ctx, await t(ctx.guild.id, "saved", n=len(tracks), name=name))
+
+
+@bot.hybrid_command(name="playlist-load", description="Load a saved playlist into the queue")
+async def playlist_load(ctx, name):
+    await ctx.defer()
+    gid = ctx.guild.id
+    if not ctx.author.voice:
+        return await reply(ctx, await t(gid, "join_voice"))
+    tracks = await db.load_playlist(gid, name)
+    if not tracks:
+        return await reply(ctx, await t(gid, "no_playlist", name=name))
+
+    player = get_player(ctx)
+    if not player or not player.vc.is_connected():
+        vc = await ctx.author.voice.channel.connect()
+        settings = await db.get_settings(gid)
+        player = players[gid] = Player(bot, vc, ctx.channel, autoplay=settings["autoplay"])
+
+    for title, vid, *rest in tracks:
+        player.add(title, vid, rest[0] if rest else ctx.author.display_name)
+    if player.vc.is_playing() or player.vc.is_paused():
+        await player._snapshot()
+        await player._announce()
+        await reply(ctx, await t(gid, "loaded", n=len(tracks), name=name))
+    else:
+        await reply(ctx, await t(gid, "loading_playlist", name=name))
+        await player.play_next()
+
+
+@bot.hybrid_command(description="Set this server's command prefix")
+async def prefix(ctx, new_prefix):
+    await db.set_setting(ctx.guild.id, "prefix", new_prefix)
+    await reply(ctx, await t(ctx.guild.id, "prefix_set", prefix=new_prefix))
+
+
+@bot.hybrid_command(description="Set this server's language")
+async def language(ctx, code):
+    if await set_lang(ctx.guild.id, code):
+        await reply(ctx, await t(ctx.guild.id, "language_set", lang=code))
+    else:
+        await reply(ctx, await t(ctx.guild.id, "bad_language", langs=", ".join(LANGS)))
+
+
+@bot.hybrid_command(name="playlists", description="List saved playlists")
+async def playlists(ctx):
+    names = await db.list_playlists(ctx.guild.id)
+    if names:
+        await reply(ctx, await t(ctx.guild.id, "playlists", names=", ".join(names)))
+    else:
+        await reply(ctx, await t(ctx.guild.id, "no_playlists"))
+
+
+async def resume_all():
+    """On startup, rebuild queues from MongoDB and rejoin voice; drop ones we can't rejoin."""
+    for doc in await db.all_resumes():
+        guild_id, voice_id = doc["_id"], doc["voice_id"]
+        channel = bot.get_channel(doc["channel_id"])
+        voice = bot.get_channel(voice_id)
+        if not voice or not channel:  # channel gone -> terminate this queue
+            await db.clear_resume(guild_id)
+            continue
+        try:
+            vc = await voice.connect()
+        except (discord.ClientException, discord.HTTPException, asyncio.TimeoutError):
+            await db.clear_resume(guild_id)  # couldn't rejoin -> terminate
+            continue
+        settings = await db.get_settings(guild_id)
+        player = players[guild_id] = Player(bot, vc, channel, autoplay=settings["autoplay"])
+        for title, vid, *rest in doc["queue"]:
+            player.add(title, vid, rest[0] if rest else "")
+        await player.play_next()
+
+
+if __name__ == "__main__":
+    bot.run(TOKEN)
