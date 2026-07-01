@@ -41,6 +41,30 @@ def get_player(ctx):
     return players.get(ctx.guild.id)
 
 
+async def get_or_make_player(ctx):
+    """Return this guild's Player, rebuilding it if the connection is orphaned.
+
+    After a gateway reconnect the voice client can outlive our players dict; ensure_voice
+    reuses that client, but its old playback (and any stuck ffmpeg) is stale, so we stop it
+    and hand back a fresh Player.
+    """
+    player = get_player(ctx)
+    if player and player.vc.is_connected():
+        return player
+    vc = await ensure_voice(ctx)
+    if vc.is_playing() or vc.is_paused():
+        vc.stop()  # orphaned playback from before the reconnect — start clean
+    settings = await db.get_settings(ctx.guild.id)
+    player = players[ctx.guild.id] = Player(bot, vc, ctx.channel, autoplay=settings["autoplay"])
+
+    resume = await db.get_resume(ctx.guild.id)  # queue lost on reconnect — restore it
+    if resume and resume["queue"]:
+        for title, vid, *rest in resume["queue"]:
+            player.add(title, vid, rest[0] if rest else "")
+        await player.play_next()  # queue[0] was the track playing before the drop
+    return player
+
+
 async def check_alone(player):
     """Arm the auto-leave timer if the bot is already alone (nobody joined via an event)."""
     if all(m.bot for m in player.vc.channel.members):
@@ -129,11 +153,7 @@ async def play(ctx, *, query):
     if not ctx.author.voice:
         return await reply(ctx, await t(gid, "join_voice"))
 
-    player = get_player(ctx)
-    if not player or not player.vc.is_connected():
-        vc = await ensure_voice(ctx)
-        settings = await db.get_settings(gid)
-        player = players[gid] = Player(bot, vc, ctx.channel, autoplay=settings["autoplay"])
+    player = await get_or_make_player(ctx)
 
     tracks = await asyncio.to_thread(resolve_list, query)
     if not tracks:
@@ -275,11 +295,7 @@ async def playlist_load(ctx, name):
     if not tracks:
         return await reply(ctx, await t(gid, "no_playlist", name=name))
 
-    player = get_player(ctx)
-    if not player or not player.vc.is_connected():
-        vc = await ensure_voice(ctx)
-        settings = await db.get_settings(gid)
-        player = players[gid] = Player(bot, vc, ctx.channel, autoplay=settings["autoplay"])
+    player = await get_or_make_player(ctx)
 
     for title, vid, *rest in tracks:
         player.add(title, vid, rest[0] if rest else ctx.author.display_name, ctx.author.id)

@@ -64,6 +64,10 @@ async def save_resume(guild_id, voice_id, channel_id, queue):
     )
 
 
+async def get_resume(guild_id):
+    return await _db.resume.find_one({"_id": guild_id})
+
+
 async def clear_resume(guild_id):
     await _db.resume.delete_one({"_id": guild_id})
 
