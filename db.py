@@ -16,6 +16,8 @@ _db = AsyncIOMotorClient(MONGO_URI)[DB_NAME]
 async def get_settings(guild_id):
     doc = await _db.settings.find_one({"_id": guild_id}) or {"_id": guild_id}
     doc.setdefault("autoplay", True)  # fill defaults for docs saved before this field existed
+    doc.setdefault("leave_after", 60)  # seconds alone before auto-leave; 0 = never
+    doc.setdefault("dj_roles", [])     # role ids allowed to control any track
     return doc
 
 
@@ -26,6 +28,14 @@ async def get_prefix(guild_id, default):
 
 async def set_setting(guild_id, key, value):
     await _db.settings.update_one({"_id": guild_id}, {"$set": {key: value}}, upsert=True)
+
+
+async def add_dj_role(guild_id, role_id):
+    await _db.settings.update_one({"_id": guild_id}, {"$addToSet": {"dj_roles": role_id}}, upsert=True)
+
+
+async def remove_dj_role(guild_id, role_id):
+    await _db.settings.update_one({"_id": guild_id}, {"$pull": {"dj_roles": role_id}})
 
 
 # --- saved playlists ---

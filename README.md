@@ -2,7 +2,8 @@
 
 A Discord music bot: yt-dlp resolves audio, FFmpeg streams it into voice.
 Slash + prefix commands, queue with jump controls, YouTube-radio autoplay,
-saved playlists, per-server settings, and queue resume on restart (state in MongoDB).
+saved playlists, per-server settings, DJ-role permissions, auto-leave when
+alone, and queue resume on restart (state in MongoDB).
 
 > mpv can't join Discord voice, so discord.py + FFmpeg does the piping — same yt-dlp source.
 
@@ -48,8 +49,24 @@ Every command works as both `/slash` and `!prefix`.
 | `playlist-save <name>` | Save the current queue under a name |
 | `playlist-load <name>` | Load a saved playlist |
 | `playlists` | List saved playlists |
+| `leavetime <seconds>` | Seconds alone in voice before auto-leaving + clearing the queue (`0` = never) |
+| `dj-add <role>` | **Admin** — let a role control any track |
+| `dj-remove <role>` | **Admin** — remove a DJ role |
+| `dj-list` | Show this server's DJ roles |
 | `prefix <new>` | Set this server's text-command prefix |
 | `language <code>` | Set this server's language |
+
+### Playback permissions
+Skip / previous / pause / stop / jump run immediately for:
+- the person who **requested the now-playing track**,
+- anyone with a **DJ role** (`dj-add`, per server), or
+- server **admins** (Administrator / Manage Server).
+
+Everyone else **votes**: each listener in the voice channel who triggers the
+action casts one vote, and it runs once a **majority** of current listeners
+agree (votes reset when the track changes). `autoplay` stays DJ/admin-only.
+
+Anyone can still `play`, view the `queue`, and manage playlists.
 
 The now-playing message shows track info, who requested it, who last used a
 control, queue length, and ⏮️ ⏯️ ⏭️ ⏹️ buttons plus the jump dropdown.

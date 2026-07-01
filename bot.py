@@ -7,6 +7,7 @@ import db
 from audio import resolve_list
 from config import GUILD_ID, PREFIX, TOKEN
 from lang import LANGS, set_lang, t
+from perms import can_control, resolve_control
 from player import Player
 
 async def get_prefix(bot, message):
@@ -24,6 +25,13 @@ def get_player(ctx):
     return players.get(ctx.guild.id)
 
 
+async def check_alone(player):
+    """Arm the auto-leave timer if the bot is already alone (nobody joined via an event)."""
+    if all(m.bot for m in player.vc.channel.members):
+        settings = await db.get_settings(player.vc.guild.id)
+        player.schedule_leave(settings["leave_after"])
+
+
 async def reply(ctx, content, **kwargs):
     """Send a command reply that self-deletes after 30s, and delete the invoking !message."""
     if ctx.interaction is None:  # prefix command: remove the user's "!..." message
@@ -34,7 +42,27 @@ async def reply(ctx, content, **kwargs):
     return await ctx.send(content, delete_after=30, **kwargs)
 
 
+async def gate(ctx, player, action):
+    """Permission-or-vote gate. Returns True if the caller's action should proceed.
+
+    Privileged users pass straight through. Others cast a vote; when a majority of the
+    voice channel's listeners agree, the action runs. Sends the appropriate notice either way.
+    """
+    proceed, status, have, need = await resolve_control(ctx.author, player, action)
+    if status == "voted":
+        key = "vote_registered" if need else "no_permission"
+        await reply(ctx, await t(ctx.guild.id, key, action=action, have=have, need=need))
+    return proceed
+
+
 _synced = False
+
+
+@bot.event
+async def on_command_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        return await reply(ctx, await t(ctx.guild.id, "admin_only"))
+    raise error
 
 
 @bot.event
@@ -51,6 +79,31 @@ async def on_ready():
     _synced = True
     print(f"Logged in as {bot.user} — synced {len(synced)} commands: {[c.name for c in synced]}")
     await resume_all()
+
+
+@bot.event
+async def on_voice_state_update(member, before, after):
+    """Start/cancel the auto-leave timer as people leave/join the bot's channel."""
+    player = players.get(member.guild.id)
+    if not player or not player.vc.is_connected():
+        return
+    chan = player.vc.channel
+    if member.id == bot.user.id and after.channel is None:  # bot got disconnected
+        return player.cancel_leave()
+    alone = all(m.bot for m in chan.members)
+    if alone:
+        settings = await db.get_settings(member.guild.id)
+        player.schedule_leave(settings["leave_after"])
+    else:
+        player.cancel_leave()
+
+
+@bot.hybrid_command(description="Seconds alone before the bot leaves and clears the queue (0 = never)")
+async def leavetime(ctx, seconds: int):
+    seconds = max(0, seconds)
+    await db.set_setting(ctx.guild.id, "leave_after", seconds)
+    key = "leavetime_off" if seconds == 0 else "leavetime_set"
+    await reply(ctx, await t(ctx.guild.id, key, n=seconds))
 
 
 @bot.hybrid_command(description="Play or queue a track from a URL or search term")
@@ -70,7 +123,7 @@ async def play(ctx, *, query):
     if not tracks:
         return await reply(ctx, await t(gid, "not_found"))
     for title, vid in tracks:
-        player.add(title, vid, ctx.author.display_name)
+        player.add(title, vid, ctx.author.display_name, ctx.author.id)
 
     if player.vc.is_playing() or player.vc.is_paused():
         await player._snapshot()      # capture the newly-queued tracks
@@ -87,6 +140,8 @@ async def play(ctx, *, query):
 @bot.hybrid_command(description="Skip the current track")
 async def skip(ctx):
     player = get_player(ctx)
+    if not await gate(ctx, player, "skip"):
+        return
     key = "skipped" if player and player.skip() else "nothing_playing"
     await reply(ctx, await t(ctx.guild.id, key))
 
@@ -94,6 +149,8 @@ async def skip(ctx):
 @bot.hybrid_command(description="Play the previous track")
 async def previous(ctx):
     player = get_player(ctx)
+    if not await gate(ctx, player, "previous"):
+        return
     ok = await player.play_previous() if player else False
     await reply(ctx, await t(ctx.guild.id, "previous" if ok else "no_previous"))
 
@@ -101,6 +158,8 @@ async def previous(ctx):
 @bot.hybrid_command(description="Pause or resume playback")
 async def pause(ctx):
     player = get_player(ctx)
+    if not await gate(ctx, player, "pause"):
+        return
     key = "toggled" if player and player.pause() else "nothing_playing"
     await reply(ctx, await t(ctx.guild.id, key))
 
@@ -110,6 +169,8 @@ async def autoplay(ctx):
     player = get_player(ctx)
     if not player:
         return await reply(ctx, await t(ctx.guild.id, "nothing_playing"))
+    if not await can_control(ctx.author, player):
+        return await reply(ctx, await t(ctx.guild.id, "no_permission"))
     player.autoplay = not player.autoplay
     await db.set_setting(ctx.guild.id, "autoplay", player.autoplay)
     await reply(ctx, await t(ctx.guild.id, "autoplay_on" if player.autoplay else "autoplay_off"))
@@ -128,7 +189,10 @@ async def queue(ctx):
 
 @bot.hybrid_command(description="Clear the queue and disconnect")
 async def stop(ctx):
-    player = players.pop(ctx.guild.id, None)
+    player = get_player(ctx)
+    if player and not await gate(ctx, player, "stop"):
+        return
+    players.pop(ctx.guild.id, None)
     if player:
         await player.stop()
     await reply(ctx, await t(ctx.guild.id, "stopped"))
@@ -137,8 +201,8 @@ async def stop(ctx):
 @bot.hybrid_command(name="playlist-save", description="Save the current queue under a name")
 async def playlist_save(ctx, name):
     player = get_player(ctx)
-    tracks = ([list(player.current)] if player and player.current else []) + \
-             ([list(row) for row in player.queue] if player else [])
+    tracks = ([list(player.current[:3])] if player and player.current else []) + \
+             ([list(row[:3]) for row in player.queue] if player else [])
     if not tracks:
         return await reply(ctx, await t(ctx.guild.id, "nothing_to_save"))
     await db.save_playlist(ctx.guild.id, name, tracks)
@@ -162,7 +226,7 @@ async def playlist_load(ctx, name):
         player = players[gid] = Player(bot, vc, ctx.channel, autoplay=settings["autoplay"])
 
     for title, vid, *rest in tracks:
-        player.add(title, vid, rest[0] if rest else ctx.author.display_name)
+        player.add(title, vid, rest[0] if rest else ctx.author.display_name, ctx.author.id)
     if player.vc.is_playing() or player.vc.is_paused():
         await player._snapshot()
         await player._announce()
@@ -184,6 +248,28 @@ async def language(ctx, code):
         await reply(ctx, await t(ctx.guild.id, "language_set", lang=code))
     else:
         await reply(ctx, await t(ctx.guild.id, "bad_language", langs=", ".join(LANGS)))
+
+
+@bot.hybrid_command(name="dj-add", description="Admin: allow a role to control any track")
+@commands.has_permissions(administrator=True)
+async def dj_add(ctx, role: discord.Role):
+    await db.add_dj_role(ctx.guild.id, role.id)
+    await reply(ctx, await t(ctx.guild.id, "dj_added", role=role.name))
+
+
+@bot.hybrid_command(name="dj-remove", description="Admin: remove a DJ role")
+@commands.has_permissions(administrator=True)
+async def dj_remove(ctx, role: discord.Role):
+    await db.remove_dj_role(ctx.guild.id, role.id)
+    await reply(ctx, await t(ctx.guild.id, "dj_removed", role=role.name))
+
+
+@bot.hybrid_command(name="dj-list", description="List this server's DJ roles")
+async def dj_list(ctx):
+    ids = (await db.get_settings(ctx.guild.id))["dj_roles"]
+    names = [r.mention for rid in ids if (r := ctx.guild.get_role(rid))]
+    key = "dj_list" if names else "dj_none"
+    await reply(ctx, await t(ctx.guild.id, key, roles=", ".join(names)))
 
 
 @bot.hybrid_command(name="playlists", description="List saved playlists")
@@ -214,6 +300,7 @@ async def resume_all():
         for title, vid, *rest in doc["queue"]:
             player.add(title, vid, rest[0] if rest else "")
         await player.play_next()
+        await check_alone(player)
 
 
 if __name__ == "__main__":

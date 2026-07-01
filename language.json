@@ -30,7 +30,16 @@
     "in_queue": "{n} in queue",
     "autoplay_name": "Autoplay",
     "jumping": "⏩ Jumping to **{title}**",
-    "jump_placeholder": "Jump to a track…"
+    "jump_placeholder": "Jump to a track…",
+    "leavetime_set": "👋 I'll leave and clear the queue after **{n}s** alone.",
+    "leavetime_off": "👋 Auto-leave disabled — I'll stay when alone.",
+    "no_permission": "🔒 Only the requester, a DJ, or an admin can control playback (join the voice channel to vote).",
+    "vote_registered": "🗳️ Vote to **{action}** registered — **{have}/{need}**.",
+    "admin_only": "🔒 You need admin permission to do that.",
+    "dj_added": "🎧 Added DJ role **{role}**.",
+    "dj_removed": "🎧 Removed DJ role **{role}**.",
+    "dj_list": "🎧 DJ roles: {roles}",
+    "dj_none": "🎧 No DJ roles set."
   },
   "vi": {
     "join_voice": "Hãy vào kênh thoại trước.",
@@ -63,6 +72,15 @@
     "in_queue": "{n} bài trong hàng đợi",
     "autoplay_name": "Tự động",
     "jumping": "⏩ Đang chuyển tới **{title}**",
-    "jump_placeholder": "Chuyển tới một bài…"
+    "jump_placeholder": "Chuyển tới một bài…",
+    "leavetime_set": "👋 Bot sẽ rời và xóa hàng đợi sau **{n}s** khi ở một mình.",
+    "leavetime_off": "👋 Đã tắt tự rời — bot sẽ ở lại khi một mình.",
+    "no_permission": "🔒 Chỉ người yêu cầu, DJ hoặc admin mới điều khiển được (vào kênh thoại để bỏ phiếu).",
+    "vote_registered": "🗳️ Đã ghi nhận phiếu **{action}** — **{have}/{need}**.",
+    "admin_only": "🔒 Bạn cần quyền admin để làm việc này.",
+    "dj_added": "🎧 Đã thêm vai trò DJ **{role}**.",
+    "dj_removed": "🎧 Đã xóa vai trò DJ **{role}**.",
+    "dj_list": "🎧 Vai trò DJ: {roles}",
+    "dj_none": "🎧 Chưa đặt vai trò DJ nào."
   }
 }

@@ -1,10 +1,25 @@
 import discord
 
 from lang import t, t_sync
+from perms import resolve_control
 
 
 def _gid(player):
     return player.vc.guild.id
+
+
+async def _allowed(interaction, player, action):
+    """True if `action` should run: privileged user or vote just passed.
+
+    Otherwise registers the vote (or refuses non-listeners) and sends an ephemeral notice.
+    """
+    proceed, status, have, need = await resolve_control(interaction.user, player, action)
+    if status == "voted":
+        key = "vote_registered" if need else "no_permission"
+        await interaction.response.send_message(
+            await t(_gid(player), key, action=action, have=have, need=need), ephemeral=True
+        )
+    return proceed
 
 
 class JumpSelect(discord.ui.Select):
@@ -19,6 +34,8 @@ class JumpSelect(discord.ui.Select):
         super().__init__(placeholder=t_sync(_gid(player), "jump_placeholder"), options=options)
 
     async def callback(self, interaction):
+        if not await _allowed(interaction, self.player, "jump"):
+            return
         index = int(self.values[0])
         title = self.player.queue[index][0]
         self.player.controller = interaction.user.display_name
@@ -47,6 +64,8 @@ class Controls(discord.ui.View):
 
     @discord.ui.button(emoji="⏮️", style=discord.ButtonStyle.secondary)
     async def previous(self, interaction, button):
+        if not await _allowed(interaction, self.player, "previous"):
+            return
         self.player.controller = interaction.user.display_name
         ok = await self.player.play_previous()
         await interaction.response.send_message(
@@ -55,6 +74,8 @@ class Controls(discord.ui.View):
 
     @discord.ui.button(emoji="⏯️", style=discord.ButtonStyle.primary)
     async def pause(self, interaction, button):
+        if not await _allowed(interaction, self.player, "pause"):
+            return
         self.player.controller = interaction.user.display_name
         ok = self.player.pause()
         await self.player._announce()  # refresh embed to show who paused
@@ -64,6 +85,8 @@ class Controls(discord.ui.View):
 
     @discord.ui.button(emoji="⏭️", style=discord.ButtonStyle.secondary)
     async def skip(self, interaction, button):
+        if not await _allowed(interaction, self.player, "skip"):
+            return
         self.player.controller = interaction.user.display_name
         ok = self.player.skip()
         await interaction.response.send_message(
@@ -72,6 +95,8 @@ class Controls(discord.ui.View):
 
     @discord.ui.button(emoji="⏹️", style=discord.ButtonStyle.danger)
     async def stop(self, interaction, button):
+        if not await _allowed(interaction, self.player, "stop"):
+            return
         await self.player.stop()
         await interaction.response.send_message(
             await t(_gid(self.player), "stopped"), ephemeral=True

@@ -19,14 +19,54 @@ class Player:
         self.seen = set()       # video ids already played, so radio doesn't repeat
         self.now_msg = None     # last "now playing" message, deleted when the next one posts
         self.controller = None  # name of whoever last used a control button
+        self._leave_task = None  # pending auto-leave timer when alone in voice
+        self.votes = {}         # action -> set of user ids who've voted this round
+
+    def listeners(self):
+        """Human (non-bot) members currently in the bot's voice channel."""
+        return [m for m in self.vc.channel.members if not m.bot]
+
+    def add_vote(self, action, user_id):
+        """Record a vote; return (votes_so_far, needed) for a majority of current listeners."""
+        self.votes.setdefault(action, set()).add(user_id)
+        needed = len(self.listeners()) // 2 + 1  # strict majority
+        return len(self.votes[action]), needed
+
+    def clear_votes(self):
+        self.votes.clear()  # call after any action runs, so the next round starts fresh
+
+    def schedule_leave(self, seconds):
+        """Disconnect + terminate the queue after `seconds` alone. 0 disables. Resets any pending timer."""
+        self.cancel_leave()
+        if seconds:
+            self._leave_task = asyncio.create_task(self._leave_after(seconds))
+
+    def cancel_leave(self):
+        if self._leave_task:
+            self._leave_task.cancel()
+            self._leave_task = None
+
+    async def _leave_after(self, seconds):
+        try:
+            await asyncio.sleep(seconds)
+        except asyncio.CancelledError:
+            return
+        self._leave_task = None
+        await self.stop()
 
     async def _snapshot(self):
-        """Persist current+queue so a restart can resume this guild."""
-        q = ([list(self.current)] if self.current else []) + [list(t) for t in self.queue]
+        """Persist current+queue so a restart can resume this guild. Drops requester_id (index 3)."""
+        rows = ([self.current] if self.current else []) + list(self.queue)
+        q = [list(t[:3]) for t in rows]
         await db.save_resume(self.vc.guild.id, self.vc.channel.id, self.channel.id, q)
 
-    def add(self, title, vid, requester=""):
-        self.queue.append((title, vid, requester))  # stream URL resolved lazily at play time
+    def requester_id(self):
+        """Discord user id of whoever requested the now-playing track, or None (autoplay/resumed)."""
+        return self.current[3] if self.current and len(self.current) > 3 else None
+
+    def add(self, title, vid, requester="", requester_id=None):
+        # tuple: (title, vid, requester_name, requester_id); id is runtime-only, not persisted
+        self.queue.append((title, vid, requester, requester_id))  # stream URL resolved lazily
 
     def _after(self, error):
         # runs in a voice thread when a track ends -> advance from the bot loop
@@ -42,9 +82,10 @@ class Player:
             return
         if self.current:
             self.history.append(self.current)
-        title, vid, requester = self.queue.pop(0)
-        self.current = (title, vid, requester)
+        self.current = self.queue.pop(0)  # (title, vid, requester, requester_id)
+        vid = self.current[1]
         self.seen.add(vid)
+        self.clear_votes()  # new track -> old skip/pause votes are stale
         url, _, _ = await asyncio.to_thread(resolve, f"https://www.youtube.com/watch?v={vid}")
         self.vc.play(make_source(url), after=self._after)
         await self._announce()
@@ -55,7 +96,7 @@ class Player:
         nxt = await asyncio.to_thread(related, seed, self.seen)
         if nxt:
             label = await t(self.vc.guild.id, "autoplay_name")
-            self.queue.append((nxt[0], nxt[1], label))  # (title, vid, requester)
+            self.queue.append((nxt[0], nxt[1], label, None))  # autoplay: no requester id
         else:
             await self.channel.send("⏹️ Autoplay found no related track — stopping.")
 
@@ -103,6 +144,7 @@ class Player:
         import discord
 
         guild_id = self.vc.guild.id
+        self.cancel_leave()
         self.queue.clear()
         self.current = None
         if self.now_msg:
@@ -127,7 +169,7 @@ class Player:
             self.now_msg = None
         if self.current:
             gid = self.vc.guild.id
-            title, vid, requester = self.current
+            title, vid, requester = self.current[:3]
             embed = discord.Embed(
                 title=title,
                 url=f"https://youtu.be/{vid}",
