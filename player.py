@@ -1,4 +1,5 @@
 import asyncio
+import random
 
 import db
 from audio import make_source, related, resolve
@@ -21,6 +22,7 @@ class Player:
         self.controller = None  # name of whoever last used a control button
         self._leave_task = None  # pending auto-leave timer when alone in voice
         self.votes = {}         # action -> set of user ids who've voted this round
+        self.loop = "off"       # "off" | "one" (repeat current) | "all" (requeue after playing)
 
     def listeners(self):
         """Human (non-bot) members currently in the bot's voice channel."""
@@ -75,6 +77,11 @@ class Player:
         asyncio.run_coroutine_threadsafe(self.play_next(), self.bot.loop)
 
     async def play_next(self):
+        if self.loop == "one" and self.current:
+            await self._start(self.current)  # replay the same track
+            return
+        if self.loop == "all" and self.current:
+            self.queue.append(self.current)  # cycle: send finished track to the back
         if not self.queue and self.autoplay and self.current:
             await self._autoplay_fill()  # radio: queue a related track
         if not self.queue:
@@ -82,7 +89,10 @@ class Player:
             return
         if self.current:
             self.history.append(self.current)
-        self.current = self.queue.pop(0)  # (title, vid, requester, requester_id)
+        await self._start(self.queue.pop(0))  # (title, vid, requester, requester_id)
+
+    async def _start(self, track):
+        self.current = track
         vid = self.current[1]
         self.seen.add(vid)
         self.clear_votes()  # new track -> old skip/pause votes are stale
@@ -133,6 +143,24 @@ class Player:
         else:
             asyncio.run_coroutine_threadsafe(self.play_next(), self.bot.loop)
         return True
+
+    def shuffle(self):
+        """Randomize the upcoming queue in place. Returns False if nothing to shuffle."""
+        if len(self.queue) < 2:
+            return False
+        random.shuffle(self.queue)
+        return True
+
+    def cycle_loop(self):
+        """Advance loop mode off -> one -> all -> off. Returns the new mode."""
+        self.loop = {"off": "one", "one": "all", "all": "off"}[self.loop]
+        return self.loop
+
+    def remove(self, index):
+        """Drop queue entry at `index`. Returns its title, or None if out of range."""
+        if not (0 <= index < len(self.queue)):
+            return None
+        return self.queue.pop(index)[0]
 
     def skip(self):
         if self.vc.is_playing() or self.vc.is_paused():

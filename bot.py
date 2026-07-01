@@ -15,6 +15,22 @@ async def get_prefix(bot, message):
     return await db.get_prefix(gid, PREFIX) if gid else PREFIX
 
 
+async def ensure_voice(ctx):
+    """Return a voice client in the caller's channel, reusing an existing connection.
+
+    Discord tracks the real connection on ctx.guild.voice_client, which can outlive
+    our players dict (e.g. after a gateway reconnect) — connecting again raises
+    'Already connected'. So reuse/move that client rather than always calling connect().
+    """
+    vc = ctx.guild.voice_client
+    target = ctx.author.voice.channel
+    if vc and vc.is_connected():
+        if vc.channel != target:
+            await vc.move_to(target)
+        return vc
+    return await target.connect()
+
+
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix=get_prefix, intents=intents)
@@ -115,7 +131,7 @@ async def play(ctx, *, query):
 
     player = get_player(ctx)
     if not player or not player.vc.is_connected():
-        vc = await ctx.author.voice.channel.connect()
+        vc = await ensure_voice(ctx)
         settings = await db.get_settings(gid)
         player = players[gid] = Player(bot, vc, ctx.channel, autoplay=settings["autoplay"])
 
@@ -187,6 +203,46 @@ async def queue(ctx):
     await reply(ctx, listing, view=QueueSelect(player))
 
 
+@bot.hybrid_command(description="Cycle loop mode: off → one track → whole queue")
+async def loop(ctx):
+    player = get_player(ctx)
+    if not player:
+        return await reply(ctx, await t(ctx.guild.id, "nothing_playing"))
+    if not await gate(ctx, player, "loop"):
+        return
+    mode = player.cycle_loop()
+    await player._snapshot()  # keep on-disk state consistent (loop is runtime-only, but cheap)
+    await reply(ctx, await t(ctx.guild.id, f"loop_{mode}"))
+
+
+@bot.hybrid_command(description="Shuffle the upcoming queue")
+async def shuffle(ctx):
+    player = get_player(ctx)
+    if not player:
+        return await reply(ctx, await t(ctx.guild.id, "nothing_playing"))
+    if not await gate(ctx, player, "shuffle"):
+        return
+    if not player.shuffle():
+        return await reply(ctx, await t(ctx.guild.id, "queue_empty"))
+    await player._announce()  # refresh now-playing so its jump dropdown reflects the new order
+    await reply(ctx, await t(ctx.guild.id, "shuffled"))
+
+
+@bot.hybrid_command(description="Remove a track from the queue by its position")
+async def remove(ctx, position: int):
+    player = get_player(ctx)
+    if not player or not player.queue:
+        return await reply(ctx, await t(ctx.guild.id, "queue_empty"))
+    if not await gate(ctx, player, "remove"):
+        return
+    title = player.remove(position - 1)  # /queue shows 1-based positions
+    if title is None:
+        return await reply(ctx, await t(ctx.guild.id, "bad_position"))
+    await player._snapshot()
+    await player._announce()  # refresh jump dropdown after removal
+    await reply(ctx, await t(ctx.guild.id, "removed", title=title))
+
+
 @bot.hybrid_command(description="Clear the queue and disconnect")
 async def stop(ctx):
     player = get_player(ctx)
@@ -221,7 +277,7 @@ async def playlist_load(ctx, name):
 
     player = get_player(ctx)
     if not player or not player.vc.is_connected():
-        vc = await ctx.author.voice.channel.connect()
+        vc = await ensure_voice(ctx)
         settings = await db.get_settings(gid)
         player = players[gid] = Player(bot, vc, ctx.channel, autoplay=settings["autoplay"])
 

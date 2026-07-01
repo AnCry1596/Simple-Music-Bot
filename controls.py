@@ -101,3 +101,24 @@ class Controls(discord.ui.View):
         await interaction.response.send_message(
             await t(_gid(self.player), "stopped"), ephemeral=True
         )
+
+    @discord.ui.button(emoji="🔁", style=discord.ButtonStyle.secondary)
+    async def loop(self, interaction, button):
+        if not await _allowed(interaction, self.player, "loop"):
+            return
+        self.player.controller = interaction.user.display_name
+        mode = self.player.cycle_loop()
+        await interaction.response.send_message(
+            await t(_gid(self.player), f"loop_{mode}"), ephemeral=True
+        )
+
+    @discord.ui.button(emoji="🔀", style=discord.ButtonStyle.secondary)
+    async def shuffle(self, interaction, button):
+        if not await _allowed(interaction, self.player, "shuffle"):
+            return
+        self.player.controller = interaction.user.display_name
+        ok = self.player.shuffle()
+        await self.player._announce()  # refresh jump dropdown to the new order
+        await interaction.response.send_message(
+            await t(_gid(self.player), "shuffled" if ok else "queue_empty"), ephemeral=True
+        )

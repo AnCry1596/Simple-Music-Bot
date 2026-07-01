@@ -39,7 +39,13 @@
     "dj_added": "🎧 Added DJ role **{role}**.",
     "dj_removed": "🎧 Removed DJ role **{role}**.",
     "dj_list": "🎧 DJ roles: {roles}",
-    "dj_none": "🎧 No DJ roles set."
+    "dj_none": "🎧 No DJ roles set.",
+    "loop_off": "🔁 Loop off.",
+    "loop_one": "🔂 Looping the current track.",
+    "loop_all": "🔁 Looping the whole queue.",
+    "shuffled": "🔀 Queue shuffled.",
+    "removed": "🗑️ Removed **{title}** from the queue.",
+    "bad_position": "No track at that position."
   },
   "vi": {
     "join_voice": "Hãy vào kênh thoại trước.",
@@ -81,6 +87,12 @@
     "dj_added": "🎧 Đã thêm vai trò DJ **{role}**.",
     "dj_removed": "🎧 Đã xóa vai trò DJ **{role}**.",
     "dj_list": "🎧 Vai trò DJ: {roles}",
-    "dj_none": "🎧 Chưa đặt vai trò DJ nào."
+    "dj_none": "🎧 Chưa đặt vai trò DJ nào.",
+    "loop_off": "🔁 Đã tắt lặp.",
+    "loop_one": "🔂 Đang lặp bài hiện tại.",
+    "loop_all": "🔁 Đang lặp toàn bộ hàng đợi.",
+    "shuffled": "🔀 Đã xáo trộn hàng đợi.",
+    "removed": "🗑️ Đã xóa **{title}** khỏi hàng đợi.",
+    "bad_position": "Không có bài nào ở vị trí đó."
   }
 }
