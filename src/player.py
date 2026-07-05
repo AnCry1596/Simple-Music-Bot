@@ -2,7 +2,7 @@ import asyncio
 import random
 
 import db
-from audio import make_source, related, resolve
+from audio import make_source, related, resolve, watch_url
 from lang import t
 
 
@@ -66,9 +66,13 @@ class Player:
         """Discord user id of whoever requested the now-playing track, or None (autoplay/resumed)."""
         return self.current[3] if self.current and len(self.current) > 3 else None
 
-    def add(self, title, vid, requester="", requester_id=None):
+    def add(self, title, vid, requester="", requester_id=None, top=False):
         # tuple: (title, vid, requester_name, requester_id); id is runtime-only, not persisted
-        self.queue.append((title, vid, requester, requester_id))  # stream URL resolved lazily
+        track = (title, vid, requester, requester_id)  # stream URL resolved lazily
+        if top:
+            self.queue.insert(0, track)
+        else:
+            self.queue.append(track)
 
     def _after(self, error):
         # runs in a voice thread when a track ends -> advance from the bot loop
@@ -96,7 +100,7 @@ class Player:
         vid = self.current[1]
         self.seen.add(vid)
         self.clear_votes()  # new track -> old skip/pause votes are stale
-        url, _, _ = await asyncio.to_thread(resolve, f"https://www.youtube.com/watch?v={vid}")
+        url, _, _ = await asyncio.to_thread(resolve, watch_url(vid))
         self.vc.play(make_source(url), after=self._after)
         await self._announce()
         await self._snapshot()
@@ -200,13 +204,14 @@ class Player:
             title, vid, requester = self.current[:3]
             embed = discord.Embed(
                 title=title,
-                url=f"https://youtu.be/{vid}",
+                url=vid if vid.startswith("http") else f"https://youtu.be/{vid}",
                 description=await t(gid, "now_playing"),
                 color=discord.Color.blurple(),
             )
             embed.add_field(name=await t(gid, "requested_by"), value=requester or "—", inline=True)
             if self.controller:
                 embed.add_field(name=await t(gid, "controlled_by"), value=self.controller, inline=True)
-            embed.set_thumbnail(url=f"https://img.youtube.com/vi/{vid}/mqdefault.jpg")
+            if not vid.startswith("http"):  # thumbnail only known for YouTube ids
+                embed.set_thumbnail(url=f"https://img.youtube.com/vi/{vid}/mqdefault.jpg")
             embed.set_footer(text=await t(gid, "in_queue", n=len(self.queue)))
             self.now_msg = await self.channel.send(embed=embed, view=Controls(self))

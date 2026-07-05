@@ -4,8 +4,9 @@ import discord
 from discord.ext import commands
 
 import db
-from audio import resolve_list
-from config import GUILD_ID, PREFIX, TOKEN
+from audio import fmt_duration, resolve_list
+from audio import search as yt_search  # aliased: the /search command below shadows the name
+from config import DASHBOARD, DASHBOARD_PORT, GUILD_ID, PREFIX
 from lang import LANGS, set_lang, t
 from perms import can_control, resolve_control
 from player import Player
@@ -33,7 +34,7 @@ async def ensure_voice(ctx):
 
 intents = discord.Intents.default()
 intents.message_content = True
-bot = commands.Bot(command_prefix=get_prefix, intents=intents)
+bot = commands.Bot(command_prefix=get_prefix, intents=intents, help_command=None)
 players = {}  # guild_id -> Player
 
 
@@ -118,6 +119,10 @@ async def on_ready():
         synced = await bot.tree.sync()             # global sync (up to ~1h to appear)
     _synced = True
     print(f"Logged in as {bot.user} — synced {len(synced)} commands: {[c.name for c in synced]}")
+    if DASHBOARD:
+        from web import start_dashboard
+
+        await start_dashboard(bot, players, DASHBOARD_PORT)
     await resume_all()
 
 
@@ -168,6 +173,78 @@ async def play(ctx, *, query):
             await reply(ctx, await t(gid, "queued_one", title=tracks[0][0]))
         else:
             await reply(ctx, await t(gid, "queued_many", n=len(tracks)))
+    else:
+        await reply(ctx, await t(gid, "loading", title=tracks[0][0]))
+        await player.play_next()
+
+
+@bot.hybrid_command(description="Search YouTube and pick a track to queue")
+async def search(ctx, *, query):
+    await ctx.defer()
+    gid = ctx.guild.id
+    if not ctx.author.voice:
+        return await reply(ctx, await t(gid, "join_voice"))
+
+    results = await asyncio.to_thread(yt_search, query)
+    if not results:
+        return await reply(ctx, await t(gid, "not_found"))
+
+    select = discord.ui.Select(
+        placeholder=await t(gid, "search_placeholder"),
+        options=[
+            discord.SelectOption(
+                label=(title or "?")[:100],
+                value=str(i),
+                description=f"{channel} • {fmt_duration(duration)}"[:100],
+            )
+            for i, (title, _, duration, channel) in enumerate(results)
+        ],
+    )
+
+    async def pick(interaction):
+        title, vid = results[int(select.values[0])][:2]
+        if not interaction.user.voice:
+            return await interaction.response.send_message(await t(gid, "join_voice"), ephemeral=True)
+        player = await get_or_make_player(ctx)
+        player.add(title, vid, interaction.user.display_name, interaction.user.id)
+        await interaction.response.send_message(await t(gid, "queued_one", title=title))
+        if player.vc.is_playing() or player.vc.is_paused():
+            await player._snapshot()
+            await player._announce()
+        else:
+            await player.play_next()
+
+    select.callback = pick
+    view = discord.ui.View(timeout=60)
+    view.add_item(select)
+    await reply(ctx, await t(gid, "search_results", query=query), view=view)
+
+
+@bot.hybrid_command(description="List all commands")
+async def help(ctx):
+    lines = [f"`/{c.name}` — {c.description}" for c in sorted(bot.commands, key=lambda c: c.name)]
+    await reply(ctx, "\n".join(lines))
+
+
+@bot.hybrid_command(description="Play a track next (front of the queue)")
+async def playtop(ctx, *, query):
+    await ctx.defer()
+    gid = ctx.guild.id
+    if not ctx.author.voice:
+        return await reply(ctx, await t(gid, "join_voice"))
+
+    player = await get_or_make_player(ctx)
+
+    tracks = await asyncio.to_thread(resolve_list, query)
+    if not tracks:
+        return await reply(ctx, await t(gid, "not_found"))
+    for title, vid in reversed(tracks):  # reversed so inserts at 0 keep playlist order
+        player.add(title, vid, ctx.author.display_name, ctx.author.id, top=True)
+
+    if player.vc.is_playing() or player.vc.is_paused():
+        await player._snapshot()
+        await player._announce()  # refresh now-playing so its dropdown shows the new queue
+        await reply(ctx, await t(gid, "queued_top", title=tracks[0][0]))
     else:
         await reply(ctx, await t(gid, "loading", title=tracks[0][0]))
         await player.play_next()
@@ -373,7 +450,3 @@ async def resume_all():
             player.add(title, vid, rest[0] if rest else "")
         await player.play_next()
         await check_alone(player)
-
-
-if __name__ == "__main__":
-    bot.run(TOKEN)

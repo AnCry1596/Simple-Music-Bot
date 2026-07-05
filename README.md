@@ -1,9 +1,12 @@
 # Discord Music Bot
 
 A Discord music bot: yt-dlp resolves audio, FFmpeg streams it into voice.
-Slash + prefix commands, queue with jump controls, YouTube-radio autoplay,
-saved playlists, per-server settings, DJ-role permissions, auto-leave when
-alone, and queue resume on restart (state in MongoDB).
+Plays YouTube plus any other [yt-dlp-supported service](https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md)
+(SoundCloud, Bandcamp, Twitch VODs, direct links, …) — paste a URL, or search
+YouTube by name. Slash + prefix commands, queue with jump controls,
+YouTube-radio autoplay, saved playlists, per-server settings, DJ-role
+permissions, auto-leave when alone, and queue resume on restart (state in
+MongoDB).
 
 > mpv can't join Discord voice, so discord.py + FFmpeg does the piping — same yt-dlp source.
 
@@ -19,10 +22,14 @@ alone, and queue resume on restart (state in MongoDB).
 3. Create a bot at https://discord.com/developers:
    - enable the **Message Content Intent**
    - invite with **Connect**, **Speak**, **Send Messages**, and `applications.commands` scope
-4. `python bot.py`
+4. `python main.py`
 
 Set `GUILD_ID` in `.env` for instant slash-command sync while developing
 (global sync can take up to ~1h to appear).
+
+### Docker
+`docker compose up -d` — builds the bot and starts MongoDB alongside it
+(only `.env` needed; `MONGODB_URI` is set for you).
 
 ## Configuration (`.env`)
 | Key | Purpose |
@@ -33,19 +40,26 @@ Set `GUILD_ID` in `.env` for instant slash-command sync while developing
 | `PREFIX` | Default prefix for text commands (per-server overridable) |
 | `LANGUAGE` | Default language code (`en`, `vi`; per-server overridable) |
 | `GUILD_ID` | Optional — server ID for instant command sync |
+| `DASHBOARD` | `true` to serve a read-only web dashboard (now playing + queues) |
+| `DASHBOARD_PORT` | Dashboard port (default `8080`) |
 
 ## Commands
 Every command works as both `/slash` and `!prefix`.
 
 | Command | Description |
 |---------|-------------|
-| `play <url or search>` | Play / queue a track or playlist (up to 25) |
+| `play <url or search>` | Play / queue a track or playlist (up to 25) from any supported site |
+| `playtop <url or search>` | Same, but adds to the **front** of the queue |
+| `search <query>` | Search YouTube; pick from the top 5 (with channel + duration) to queue |
 | `skip` | Skip the current track |
 | `previous` | Play the previous track |
 | `pause` | Pause / resume |
 | `queue` | Show the queue with a jump-to dropdown |
+| `remove <position>` | Remove a queued track by its position |
+| `shuffle` | Shuffle the upcoming queue |
+| `loop` | Cycle loop mode: off → one track → whole queue |
 | `stop` | Clear the queue and disconnect |
-| `autoplay` | Toggle YouTube-radio autoplay when the queue empties |
+| `autoplay` | Toggle YouTube-radio autoplay when the queue empties (YouTube tracks only) |
 | `playlist-save <name>` | Save the current queue under a name |
 | `playlist-load <name>` | Load a saved playlist |
 | `playlists` | List saved playlists |
@@ -55,9 +69,10 @@ Every command works as both `/slash` and `!prefix`.
 | `dj-list` | Show this server's DJ roles |
 | `prefix <new>` | Set this server's text-command prefix |
 | `language <code>` | Set this server's language |
+| `help` | List all commands |
 
 ### Playback permissions
-Skip / previous / pause / stop / jump run immediately for:
+Skip / previous / pause / stop / jump / loop / shuffle / remove run immediately for:
 - the person who **requested the now-playing track**,
 - anyone with a **DJ role** (`dj-add`, per server), or
 - server **admins** (Administrator / Manage Server).

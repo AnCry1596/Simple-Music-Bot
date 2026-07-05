@@ -5,6 +5,8 @@ services:
     env_file: .env
     environment:
       MONGODB_URI: mongodb://mongo:27017
+    ports:
+      - "8080:8080"  # web dashboard (only listens when DASHBOARD=true)
     depends_on:
       - mongo
 

@@ -10,6 +10,8 @@ GUILD_ID = int(os.environ["GUILD_ID"]) if os.environ.get("GUILD_ID") else None  
 MONGO_URI = os.environ.get("MONGODB_URI", "mongodb://localhost:27017")
 DB_NAME = os.environ.get("MONGODB_DB_NAME", "musicbot")
 DEFAULT_LANG = os.environ.get("LANGUAGE", "en")
+DASHBOARD = os.environ.get("DASHBOARD", "false").lower() in ("1", "true", "yes")
+DASHBOARD_PORT = int(os.environ.get("DASHBOARD_PORT", "8080"))
 
 YDL_OPTS = {
     "format": "bestaudio[ext=m4a]/bestaudio/best",
